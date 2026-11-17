@@ -45,6 +45,21 @@ It solves the dual-write problem. So, instead of writing directly to both system
 end. thats all you need to know really.
 but if you are a curious little one, don't worry, im here for you. ill tell you how it works, and were going to build it out here in go
 
+before we proceed. theres a few things we have to know and understand in order to fully grasp how the whole outbox pattern works
+
+first, a more specific overview of how this pattern is implemented (in techincal terms so you can visualise and understand in a highlvel how the data flows)
+the transactional outbox pattern is implemented by
+
+1. we have to have an outbox table in your database. this outbox table will have an id, payload(data itll hold).
+2. then there will be a message relay (this just connects with our database(source) and also connecteds to a message broker(destiniation)) it reads the logs to get the information of what has been updated. and every updated field written to that log, it relays it to the message broker
+3. the log is a WAL Write Ahead log, it is an append-only file on disk where a database records every data change before applying those changes to the actual database tables
+4. this message relay reads the change from the source (database) and sends it to the destination(message brokers).
+5. our message brokers now get the event they were expecting and proceed with the flow without the issue of the dual write problem
+
+now that you understnad the flow.
+
+now lets walk through how this is implemented production style in golang
+
 WAL: a seqential file that writes every update made / every database change
 
 explain what the outbox pattern is,
