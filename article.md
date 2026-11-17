@@ -18,13 +18,32 @@ but now, lets first acknowlede a few things
 thank you very much for your attention. now i guess you can see the problem too aswell right?
 well if you dont, the problem is, how do we ensure that the commit of our order to the database, and also the publishing of the events to the next service both work atomically.
 
-Because, without using 2PC, sending a message in the middle of a transaction is not reliable. There’s no guarantee that the transaction will commit. Similarly, if a service sends a message after committing the transaction there’s no guarantee that it won’t crash before sending the message.
+Because, sending a message in the middle of a transaction is not reliable. There’s no guarantee that the transaction will commit. Similarly, if a service sends a message after committing the transaction there’s no guarantee that it won’t crash before sending the message.
 
-whats is the transactional outbox pattern
+the Problem
+finally, we haev arrived at the problem. my learned colleague, the question is therefore
+How do we atomically update the database and send messages to a message broker?
+
+while noting that
+
+1. If the database transaction commits then the messages must be sent. Conversely, if the database rolls back, the messages must not be sent
+2. Messages must be sent to the message broker in the order they were sent by the service. This ordering must be preserved across multiple service instances that update the same aggregate.
+
+the solution is, (im sure you guess it), HIRING ME!
+
+well, lets not get ahead of ourselves, cause we know no recruiter reads these bs articles anyway(ouch).
+
+so, the solution?
+the transactional outbox pattern
+
+transactional outbox pattern, defined
 
 The Transactional Outbox Pattern is a design pattern used in distributed systems to guarantee that a service reliably updates its local database and publishes a corresponding event to a message broker as a single atomic operation.
 
-The Transactional Outbox Pattern is a microservices design pattern that solves the dual-write problem by enabling a service to atomically update its local database and publish a corresponding message or event to a message broker without requiring a distributed transaction (such as Two-Phase Commit). Instead of writing directly to both systems, the service persists the outgoing message into a dedicated database outbox table within the exact same local ACID transaction as the business entity update. A separate asynchronous process—known as a Message Relay—then reads the committed outbox records and reliably publishes them to the message broker, guaranteeing at-least-once delivery.
+It solves the dual-write problem. So, instead of writing directly to both systems, the service persists the outgoing message into a dedicated database outbox table within the exact same local ACID transaction as the business entity update. A separate asynchronous process, known as a Message Relay, then reads the committed outbox records and reliably publishes them to the message broker, guaranteeing at-least-once delivery.
+
+end. thats all you need to know really.
+but if you are a curious little one, don't worry, im here for you. ill tell you how it works, and were going to build it out here in go
 
 WAL: a seqential file that writes every update made / every database change
 
