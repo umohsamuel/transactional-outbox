@@ -1,0 +1,58 @@
+services:
+  app:
+    profiles: ["app"]
+    build:
+      context: ../..
+      dockerfile: services/auth/Dockerfile
+      target: prod
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    env_file: .env
+    environment:
+      DB_HOST: postgres
+      JWT_ACCESS_PRIVATE_KEY_FILE: /run/secrets/jwt_access_private_key
+    secrets:
+      - jwt_access_private_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - api_network
+  postgres:
+    image: postgres:17.4
+    container_name: auth_pg
+    command: ["postgres", "-c", "wal_level=logical"]
+    volumes:
+      - postgresql_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE:-postgres}
+      PGPORT: ${DB_PORT:-5432}
+    ports:
+      - "${DB_PORT:-5432}:${DB_PORT:-5432}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - api_network
+      - eba_infra
+    restart: unless-stopped
+
+secrets:
+  jwt_access_private_key:
+    file: ${JWT_ACCESS_PRIVATE_KEY_FILE:-keys/access_private.pem}
+
+volumes:
+  postgresql_data:
+    driver: local
+networks:
+  api_network:
+    driver: bridge
+  eba_infra:
+    name: eba_infra
+    external: true

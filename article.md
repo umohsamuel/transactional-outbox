@@ -60,6 +60,41 @@ now that you understnad the flow.
 
 now lets walk through how this is implemented production style in golang
 
+---
+
+The names come from domain-driven design (DDD), and they're the default column names Debezium's outbox router looks for. Each column answers a different question about an event:
+
+┌───────────────┬─────────────────────────┬──────────────────────────┬────────────────────────────────────────────────────────────┐
+│ Column │ Question it answers │ Typical value in a │ What Debezium does with it │
+│ │ │ classic shop │ │
+├───────────────┼─────────────────────────┼──────────────────────────┼────────────────────────────────────────────────────────────┤
+│ aggregatetype │ What kind of thing is │ order │ Picks the Kafka topic (route.by.field) │
+│ │ this event about? │ │ │
+├───────────────┼─────────────────────────┼──────────────────────────┼────────────────────────────────────────────────────────────┤
+│ aggregateid │ Which one of those │ 8f3c... (the order's ID) │ Becomes the Kafka message key │
+│ │ things? │ │ │
+├───────────────┼─────────────────────────┼──────────────────────────┼────────────────────────────────────────────────────────────┤
+│ type │ What happened to it? │ OrderCreated, OrderPaid, │ Metadata about the event. In your config it isn't sent on │
+│ │ │ OrderShipped │ its own; it can be added as a header (below). │
+├───────────────┼─────────────────────────┼──────────────────────────┼────────────────────────────────────────────────────────────┤
+│ payload │ The details │ the order as JSON │ Becomes the message value │
+└───────────────┴─────────────────────────┴──────────────────────────┴────────────────────────────────────────────────────────────┘
+
+What an "aggregate" is: in DDD, it's one business thing that changes as a unit. An Order together with its line items is one aggregate; so is a Product or a User. All events about one order share the same aggregate type (order) and the same aggregate ID (that order's ID), while type changes with each event.
+
+Why you need both aggregatetype and type
+
+They answer different questions, and one aggregate type has many event types:
+aggregatetype = order, aggregateid = 8f3c…, type = OrderCreated
+aggregatetype = order, aggregateid = 8f3c…, type = OrderPaid
+aggregatetype = order, aggregateid = 8f3c…, type = OrderShipped
+
+- The aggregate type groups events onto one topic (everything about orders goes to the order topic), so a consumer subscribes once to "order events".
+- The aggregate ID as the key keeps one order's events in order: Kafka sends every message with the same key to the same partition, so OrderPaid can never be processed before OrderCreated.
+- The event type tells the consumer what to do with each message. A consumer switches on it: on OrderPaid, start fulfilment; on OrderShipped, send a tracking email.
+
+---
+
 WAL: a seqential file that writes every update made / every database change
 
 explain what the outbox pattern is,
