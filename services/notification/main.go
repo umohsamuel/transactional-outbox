@@ -33,6 +33,8 @@ func main() {
 		Brokers: strings.Split(brokers, ","),
 		Topic:   topic,
 		GroupID: groupID,
+
+		WatchPartitionChanges: true,
 	})
 	defer r.Close()
 
