@@ -1,39 +1,32 @@
-# Build the application
-# all: build test
+NETWORK := outbox_infra
 
-build:
-	@echo "Building..."
-	
-	
-	@go build -o main.exe cmd/main.go
+# Create the shared network every compose file joins (safe to re-run)
+network:
+	-@docker network create $(NETWORK)
 
-# Run the application
-run:
-	@go run cmd/main.go
-
-# Create DB container
-docker-run:
+# Shared infra (root docker-compose.yaml)
+infra: network
 	@docker compose up -d
 
-# Shutdown DB container
-docker-down:
+infra-down:
 	@docker compose down
 
-# Clean the binary
-clean:
-	@echo "Cleaning..."
-	@rm -f main.exe
+# Order service: app + its postgres
+order: network
+	@docker compose -f services/order/docker-compose.yaml --profile app up -d --build
 
-# Live Reload
-watch:
-	@powershell -ExecutionPolicy Bypass -Command "if (Get-Command air -ErrorAction SilentlyContinue) { \
-		air; \
-		Write-Output 'Watching...'; \
-	} else { \
-		Write-Output 'Installing air...'; \
-		go install github.com/air-verse/air@latest; \
-		air; \
-		Write-Output 'Watching...'; \
-	}"
+order-down:
+	@docker compose -f services/order/docker-compose.yaml --profile app down
 
-.PHONY: all build run test clean watch docker-run docker-down itest docs
+# Notification service
+notification: network
+	@docker compose -f services/notification/docker-compose.yaml up -d --build
+
+notification-down:
+	@docker compose -f services/notification/docker-compose.yaml down
+
+up: infra order notification
+
+down: notification-down order-down infra-down
+
+.PHONY: network infra infra-down order order-down notification notification-down up down

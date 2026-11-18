@@ -1,0 +1,52 @@
+services:
+  app:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    restart: unless-stopped
+    container_name: order_app
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    env_file: .env
+    environment:
+      DB_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - order_network
+  postgres:
+    image: postgres:17.4
+    container_name: order_pg
+    command: ["postgres", "-c", "wal_level=logical"]
+    volumes:
+      - postgresql_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE:-postgres}
+      PGPORT: ${DB_PORT:-5432}
+    ports:
+      - "${DB_PORT:-5432}:${DB_PORT:-5432}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - order_network
+      - outbox_infra
+    restart: unless-stopped
+
+volumes:
+  postgresql_data:
+    driver: local
+networks:
+  order_network:
+    driver: bridge
+  outbox_infra:
+    name: outbox_infra
+    external: true

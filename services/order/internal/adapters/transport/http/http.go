@@ -4,8 +4,8 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/umohsamuel/transactional-outbox/internal/adapters/transport/http/handlers"
-	"github.com/umohsamuel/transactional-outbox/internal/services"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/adapters/transport/http/handlers"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/services"
 )
 
 type HttpServer struct {

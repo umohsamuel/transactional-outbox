@@ -1,0 +1,19 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    container_name: notification_app
+    restart: unless-stopped
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-outbox.event.order}
+      KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-notification-service}
+    networks:
+      - outbox_infra
+
+networks:
+  outbox_infra:
+    name: outbox_infra
+    external: true

@@ -8,9 +8,9 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/umohsamuel/transactional-outbox/internal/adapters/db/sqlc"
-	"github.com/umohsamuel/transactional-outbox/internal/domain/order"
-	"github.com/umohsamuel/transactional-outbox/internal/ports"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/adapters/db/sqlc"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/domain/order"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/ports"
 )
 
 var _ ports.OrderRepository = (*OrderRepository)(nil)

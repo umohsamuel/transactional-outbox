@@ -15,10 +15,10 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/umohsamuel/transactional-outbox/internal/adapters/db/repository"
-	httpserver "github.com/umohsamuel/transactional-outbox/internal/adapters/transport/http"
-	"github.com/umohsamuel/transactional-outbox/internal/services"
-	"github.com/umohsamuel/transactional-outbox/pkg/env"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/adapters/db/repository"
+	httpserver "github.com/umohsamuel/transactional-outbox/services/order/internal/adapters/transport/http"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/services"
+	"github.com/umohsamuel/transactional-outbox/services/order/pkg/env"
 )
 
 func main() {

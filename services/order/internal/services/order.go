@@ -4,8 +4,8 @@ import (
 	"context"
 
 	"github.com/google/uuid"
-	"github.com/umohsamuel/transactional-outbox/internal/domain/order"
-	"github.com/umohsamuel/transactional-outbox/internal/ports"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/domain/order"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/ports"
 )
 
 type OrderService struct {

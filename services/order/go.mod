@@ -1,4 +1,4 @@
-module github.com/umohsamuel/transactional-outbox
+module github.com/umohsamuel/transactional-outbox/services/order
 
 go 1.27.1
 
