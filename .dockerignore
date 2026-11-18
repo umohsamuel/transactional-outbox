@@ -1,0 +1,6 @@
+.env
+.git
+tmp/
+main.exe
+build-errors.log
+article.md

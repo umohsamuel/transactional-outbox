@@ -1,5 +1,3 @@
-# Simple Makefile for a Go project
-
 # Build the application
 # all: build test
 
@@ -12,13 +10,9 @@ build:
 # Run the application
 run:
 	@go run cmd/main.go
-# Generate Swagger docs
-docs:
-	@swag init -g internal/adapters/transport/http/http.go -o docs --parseDependency --parseInternal
 
 # Create DB container
 docker-run:
-	@$(MAKE) -C ../../infra docker-run
 	@docker compose up -d
 
 # Shutdown DB container

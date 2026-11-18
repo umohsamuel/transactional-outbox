@@ -60,6 +60,10 @@ now that you understnad the flow.
 
 now lets walk through how this is implemented production style in golang
 
+    // 3. Delete it straight away so the outbox table stays empty. The INSERT
+    // is already in the WAL, and that is what Debezium reads, so the event
+    // still gets published. The outbox router ignores the DELETE.
+
 ---
 
 The names come from domain-driven design (DDD), and they're the default column names Debezium's outbox router looks for. Each column answers a different question about an event:

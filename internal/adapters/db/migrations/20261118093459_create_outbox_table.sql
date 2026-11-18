@@ -8,8 +8,8 @@ CREATE TABLE outbox (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE PUBLICATION auth_outbox FOR TABLE outbox;
+CREATE PUBLICATION order_outbox FOR TABLE outbox;
 
 -- +goose Down
-DROP PUBLICATION IF EXISTS auth_outbox;
+DROP PUBLICATION IF EXISTS order_outbox;
 DROP TABLE IF EXISTS outbox;

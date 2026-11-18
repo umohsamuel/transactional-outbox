@@ -11,6 +11,14 @@ import (
 	"github.com/google/uuid"
 )
 
+type Order struct {
+	ID         uuid.UUID
+	CustomerID uuid.UUID
+	Amount     int64
+	Status     string
+	CreatedAt  time.Time
+}
+
 type Outbox struct {
 	ID            uuid.UUID
 	Aggregatetype string

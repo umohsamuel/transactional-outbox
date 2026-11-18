@@ -1,0 +1,8 @@
+.env
+.env.*
+.env.*.local
+**/services/*/.env
+*.exe
+*.exe~
+services/*/tmp/
+*.pem

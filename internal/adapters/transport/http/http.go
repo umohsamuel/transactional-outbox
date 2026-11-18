@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/umohsamuel/transactional-outbox/internal/adapters/transport/http/handlers"
 	"github.com/umohsamuel/transactional-outbox/internal/services"
 )
 
@@ -22,14 +23,9 @@ func NewHttpServer(svc *services.Services) *HttpServer {
 }
 
 func (s *HttpServer) setupRoutes() {
+	v1 := s.router.Group("/api/v1")
 
-	// v1 := s.router.Group("/api/v1")
-
-	// authMW := middlewares.NewAuth(s.services.Auth)
-	// protected := v1.Group("", authMW.Handle)
-
-	// mfaHandler := handlers.NewMFAHandler(s.services)
-	// mfaHandler.RegisterRoutes(protected)
+	handlers.NewOrderHandler(s.services).RegisterRoutes(v1)
 
 }
 

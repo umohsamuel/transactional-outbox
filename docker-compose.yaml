@@ -2,8 +2,8 @@ services:
   app:
     profiles: ["app"]
     build:
-      context: ../..
-      dockerfile: services/auth/Dockerfile
+      context: .
+      dockerfile: Dockerfile
       target: prod
     restart: unless-stopped
     ports:
@@ -11,17 +11,14 @@ services:
     env_file: .env
     environment:
       DB_HOST: postgres
-      JWT_ACCESS_PRIVATE_KEY_FILE: /run/secrets/jwt_access_private_key
-    secrets:
-      - jwt_access_private_key
     depends_on:
       postgres:
         condition: service_healthy
     networks:
-      - api_network
+      - outbox_network
   postgres:
     image: postgres:17.4
-    container_name: auth_pg
+    container_name: outbox_pg
     command: ["postgres", "-c", "wal_level=logical"]
     volumes:
       - postgresql_data:/var/lib/postgresql/data
@@ -39,20 +36,12 @@ services:
       retries: 3
       start_period: 15s
     networks:
-      - api_network
-      - eba_infra
+      - outbox_network
     restart: unless-stopped
-
-secrets:
-  jwt_access_private_key:
-    file: ${JWT_ACCESS_PRIVATE_KEY_FILE:-keys/access_private.pem}
 
 volumes:
   postgresql_data:
     driver: local
 networks:
-  api_network:
+  outbox_network:
     driver: bridge
-  eba_infra:
-    name: eba_infra
-    external: true
