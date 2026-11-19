@@ -29,12 +29,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	brokerList := strings.Split(brokers, ",")
+
+	log.Printf("waiting for topic %q", topic)
+	if err := waitForTopic(ctx, brokerList[0], topic); err != nil {
+		log.Println("shutting down")
+		return
+	}
+
 	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: strings.Split(brokers, ","),
+		Brokers: brokerList,
 		Topic:   topic,
 		GroupID: groupID,
-
-		WatchPartitionChanges: true,
 	})
 	defer r.Close()
 
@@ -63,6 +69,25 @@ func main() {
 
 		log.Printf("sending confirmation to customer %s: order %s for %d is %s",
 			evt.CustomerID, evt.OrderID, evt.Amount, evt.Status)
+	}
+}
+
+func waitForTopic(ctx context.Context, broker, topic string) error {
+	for {
+		conn, err := kafka.DialContext(ctx, "tcp", broker)
+		if err == nil {
+			partitions, err := conn.ReadPartitions(topic)
+			conn.Close()
+			if err == nil && len(partitions) > 0 {
+				return nil
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 	}
 }
 
