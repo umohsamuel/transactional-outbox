@@ -14,7 +14,7 @@ What do you need to follow along?
 
 ## The Problem
 
-We have an e-commerce platform built with microservices that use the saga pattern to coordinate transactions across services. When a customer places an order, our order service receives it and validates it. From there, it has to do two things:
+We have an e-commerce platform built with microservices, and we use the saga pattern to coordinate transactions across services. When a customer places an order, our order service receives and validates it. From there, it has to:
 
 - Save the order to its database.
 - Publish an event to the other services, like the inventory, payment and notification services, so they can continue the flow.
