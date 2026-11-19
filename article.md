@@ -1,82 +1,159 @@
-todos in this guide:
+# Reliable Event Publishing: Transactional Outbox Pattern in Golang with Debezium
 
-periquisites
+A practical guide to the transactional outbox pattern in Go. Write to your database and publish events atomically in a single transaction, then stream those events to Kafka with Debezium and change data capture.
 
-introduction: introduce a project/scenaro/architecture and that try to lead and showcase the bottleneck or uncertinty of sending a message after a transaction/or even before and then show the shortcommings. then highlight how we can solve it with (hint, hint) our transactional outbox pattern
+## Prerequisites
 
-Overview/Problem/Usecase/Context whatever you want to call it
+What do you need to follow along?
 
-Say you have an ecommerce platform (same example again? yes ill keep milking this ecommerce example for all my articles, deal with it). it runs as a distributed microservices architecture.
+- Working knowledge of Golang.
+- Go & Docker installed on your PC.
+- Basic knowledge of Kafka. If you need a refresher, my guide on [fault-tolerant Kafka pipelines](https://www.umohsg.com/blog/building-fault-tolerant-event-driven-kafka-pipelines-in-go-reliable-reprocessing-dead-letter-queues-1f6874d4-270c-48e1-9798-324b494c7f0e) covers the basics.
+- Basic knowledge of the saga pattern. My guide on the [saga pattern in Golang](https://www.umohsg.com/blog/distributed-transaction-processing-saga-pattern-in-golang-60084aca-428a-413e-8388-7d1d0d6b22c3) covers everything you need.
+- Patience. I tried to keep this guide short. I failed.
 
-So lets say on this our platform, a customer places an order. our order service gets this order, validates it and now in order(haha, get it?) to finalize the flow. it has to commit the order(how many orders are in this sentence ffs) placed to our database and also has to publish an event to other(order, haha) services like the inventory, payment and notification service in line to complete the whole flow.
+## The Problem
 
-but now, lets first acknowlede a few things
+We have an e-commerce platform built with microservices that use the saga pattern to coordinate transactions across services. When a customer places an order, our order service receives it and validates it. From there, it has to do two things:
 
-1. were running a distributed microservices architecture
-2. were working with the saga pattern
+- Save the order to its database.
+- Publish an event to the other services, like the inventory, payment and notification services, so they can continue the flow.
 
-thank you very much for your attention. now i guess you can see the problem too aswell right?
-well if you dont, the problem is, how do we ensure that the commit of our order to the database, and also the publishing of the events to the next service both work atomically.
+I guess you can see the problem now, right? How do we ensure that saving the order and publishing the event either both succeed or both fail?
 
-Because, sending a message in the middle of a transaction is not reliable. There’s no guarantee that the transaction will commit. Similarly, if a service sends a message after committing the transaction there’s no guarantee that it won’t crash before sending the message.
+The database and the message broker are two separate systems, and no single transaction can cover both of them. That leaves us with two options:
 
-the Problem
-finally, we haev arrived at the problem. my learned colleague, the question is therefore
-How do we atomically update the database and send messages to a message broker?
+- Publish the event inside the database transaction: The event goes out, but there is no guarantee the transaction will commit. If it rolls back, the other services are now processing an order that does not exist.
+- Publish the event after the transaction commits: The order is saved, but the service can crash before it publishes the event. The order now exists, but no other service will ever know about it.
 
-while noting that
+This is called the dual write problem.
 
-1. If the database transaction commits then the messages must be sent. Conversely, if the database rolls back, the messages must not be sent
-2. Messages must be sent to the message broker in the order they were sent by the service. This ordering must be preserved across multiple service instances that update the same aggregate.
+### The Question
 
-the solution is, (im sure you guess it), HIRING ME!
+How do we atomically update the database and publish events to a message broker?
 
-well, lets not get ahead of ourselves, cause we know no recruiter reads these bs articles anyway(ouch).
+While noting that:
 
-so, the solution?
-the transactional outbox pattern
+- If the database transaction commits, the events must be published. If it rolls back, they must not be published.
+- Events must reach the message broker in the order the service published them, even when multiple instances of the service update the same aggregate.
 
-transactional outbox pattern, defined
+The solution (I'm sure you guessed it) is to hire me!
+
+Well, let's not get ahead of ourselves. We all know no recruiter reads these articles anyway (ouch).
+
+The actual solution is the transactional outbox pattern.
+
+## The Transactional Outbox Pattern, Defined
 
 The Transactional Outbox Pattern is a design pattern used in distributed systems to guarantee that a service reliably updates its local database and publishes a corresponding event to a message broker as a single atomic operation.
 
-It solves the dual-write problem. So, instead of writing directly to both systems, the service persists the outgoing message into a dedicated database outbox table within the exact same local ACID transaction as the business entity update. A separate asynchronous process, known as a Message Relay, then reads the committed outbox records and reliably publishes them to the message broker, guaranteeing at-least-once delivery.
+It solves the dual write problem. Instead of writing to both the database and the message broker, the service only writes to the database. It saves the outgoing event into a dedicated outbox table, in the same local ACID transaction as the business data. A separate process, known as the message relay, then reads the committed events from the outbox and publishes them to the message broker. This guarantees at-least-once delivery.
 
-end. thats all you need to know really.
-but if you are a curious little one, don't worry, im here for you. ill tell you how it works, and were going to build it out here in go
+## Building the Message Relay
 
-before we proceed. theres a few things we have to know and understand in order to fully grasp how the whole outbox pattern works
+There are two common ways to build the message relay:
 
-first, a more specific overview of how this pattern is implemented (in techincal terms so you can visualise and understand in a highlvel how the data flows)
+- Polling.
+- Change data capture (CDC).
 
-the main idea behind the transactional outbox pattern is CDC (change data capture)
+### Polling
 
-what is change data capture?
-Change data capture (CDC) is a technique for detecting and capturing changes made to data in a database and transmitting those changes to downstream systems. CDC enables near real-time or real-time data synchronization, replication and event-driven processing across systems after database changes occur.
+With polling, the relay is a background worker that queries the outbox table on a timer. The outbox table will need one extra column, like `published_at`, so the relay can tell which events it has already sent.
 
-the transactional outbox pattern is not then implemented with cdc like
+Every second or so, the relay starts a transaction, gets a batch of unpublished events, publishes them to the broker, marks them as published and commits. If the relay crashes after it publishes an event but before it commits, the event is still unpublished in the database, so the next run publishes it again. That means polling also gives at-least-once delivery.
 
-1. the application writes both its business data and an event record into a dedicated outbox table within the same local database transaction.
-2. A CDC tool then reads the database's transaction log and streams those new outbox rows to a message broker like Apache Kafka or RabbitMQ.
+Polling is simple. It works with any database, and it doesn't need any extra infrastructure. But it has a few downsides:
 
-a high level overview of the complete flow looks something like:
+- Constant load: The relay queries the table every second, even when nothing has changed.
+- Latency: An event has to wait for the next poll before it is published.
+- Cleanup: Published rows stay in the table until you delete them, so you need a cleanup job, or the table keeps growing.
+- Ordering: With more than one relay, keeping events in order gets harder, because each relay works on its own batch.
 
-1. we have to have an outbox table in your database. this outbox table will have an id, payload(data itll hold).
-2. then there will be a message relay (this just connects with our database(source) and also connects to a message broker(destiniation)) it reads the database transaction logs to get the information of what has been updated. and every updated field written to that log, it relays it to the message broker
-3. the log is a WAL Write Ahead log, it is an append-only file on disk where a database records every data change before applying those changes to the actual database tables
-4. this message relay reads the change from the source (database) and sends it to the destination(message brokers).
-5. our message brokers now get the event they were expecting and proceed with the flow without the issue of the dual write problem
+### Change Data Capture (CDC)
 
-now that you understnad the flow.
+With CDC, the relay does not query the outbox table at all. It reads the database's transaction log instead and publishes new outbox rows as soon as they are committed. There is no polling, no extra column and no extra load on the table.
 
-now lets walk through how this is implemented production style in golang
+In this guide, we will focus on CDC, as it is the most widely used method in production.
 
-project structure
-define and map the project structure here
+## Change Data Capture, Defined
 
-first we have to creat our outbox table in the service that will pubish the event so in our order service
+Change data capture (CDC) is a technique for detecting and capturing changes made to data in a database and transmitting those changes to downstream systems. CDC enables near real-time data synchronization, replication and event-driven processing across systems after database changes occur.
 
+So with CDC, the transactional outbox pattern works like this:
+
+- The application writes both its business data and an event record into the outbox table in the same local database transaction.
+- A CDC tool then reads the database's transaction log and sends those new outbox rows to a message broker like Apache Kafka.
+
+### The Write-Ahead Log
+
+Most databases have a transaction log. MySQL has the binlog and MongoDB has the oplog. In Postgres, which is what we're using, it's called the write-ahead log (WAL). The WAL is an append-only file on disk where Postgres records every data change before applying it to the actual tables.
+
+This is what makes CDC reliable. Postgres only sends a transaction's changes to the CDC tool after the transaction commits, so the relay only ever sees events from transactions that actually committed.
+
+### Introducing Debezium
+
+Debezium is an open source distributed platform for change data capture. It runs on top of Kafka Connect, which is a tool for moving data between Kafka and other systems. Debezium connects to Postgres, reads the WAL, and turns each change into a Kafka message.
+
+### The Complete Flow
+
+With all these pieces in place, the complete flow looks like this:
+
+- The order service saves the order and an event row in the outbox table, in one transaction.
+- Postgres writes both changes to the WAL when the transaction commits.
+- Debezium reads the new outbox row from the WAL.
+- Debezium publishes the event to Kafka.
+- The notification service consumes the event and continues the flow.
+
+At no point does the order service talk to Kafka. That is the whole point.
+
+## Implementing the Outbox Pattern in Golang
+
+Now that we understand the flow, let's implement it in Go. We will build two services:
+
+- The order service: It saves orders and writes the events to its outbox table.
+- The notification service: It consumes the events from Kafka. It is very simple, because its only job is to show that the event arrived.
+
+### Project Structure
+
+Our project is a monorepo with two services, and the shared infrastructure lives at the root:
+
+```bash
+.
+├── docker-compose.yaml              # Kafka, Kafka Connect and Kafka UI
+├── Makefile
+├── go.work
+├── debezium/
+│   └── order-outbox-connector.json  # Debezium connector config
+└── services/
+    ├── order/
+    │   ├── cmd/
+    │   │   └── main.go
+    │   ├── internal/
+    │   │   ├── domain/order/        # order entity and event payload
+    │   │   ├── ports/               # repository interface
+    │   │   ├── services/            # order service logic
+    │   │   └── adapters/
+    │   │       ├── db/
+    │   │       │   ├── migrations/  # goose migrations
+    │   │       │   ├── sqlc/        # queries and generated code
+    │   │       │   └── repository/  # order repository with the outbox write
+    │   │       └── transport/http/  # HTTP server and handlers
+    │   ├── pkg/env/                 # environment variables
+    │   ├── Dockerfile
+    │   └── docker-compose.yaml
+    └── notification/
+        ├── main.go                  # Kafka consumer
+        ├── Dockerfile
+        └── docker-compose.yaml
 ```
+
+### The Outbox Table
+
+First, we create the outbox table in the service that publishes the event, which is our order service. We use goose for our migrations:
+
+```sql
+-- services/order/internal/adapters/db/migrations/20261118093459_create_outbox_table.sql
+
 -- +goose Up
 CREATE TABLE outbox (
   id            UUID PRIMARY KEY,
@@ -94,18 +171,22 @@ DROP PUBLICATION IF EXISTS order_outbox;
 DROP TABLE IF EXISTS outbox;
 ```
 
-the columns come from domain driven design, theyre the default column names Debezium outbox router looks for, heres what each column represent:
+The column names come from domain-driven design, and they're also the default column names the Debezium outbox event router looks for:
 
-aggregatetype: this picks the Kafka topic (route.by.field)
-aggregateid: this Becomes the Kafka message key
-type: Metadata about the event. In your config it isn't sent on
-payload: Becomes the message value in our case `the order as JSON`
+- aggregatetype: The type of aggregate the event belongs to, which is `order` for us. Debezium uses it to pick the Kafka topic.
+- aggregateid: The ID of the aggregate, which is the order's ID. Debezium uses it as the Kafka message key. Kafka sends every message with the same key to the same partition, so all the events for one order stay in order.
+- type: The event type, like `OrderCreated`. In our setup, Debezium sends it as a message header called `eventType`.
+- payload: The event data, which is the order as JSON. Debezium uses it as the message value.
 
-The publication tells Postgres which table's changes to send out over logical replication, so Debezium only sees the outbox
+The last line creates a publication. A publication is a list of tables Postgres is allowed to stream changes from. Debezium reads changes through this publication, so it only sees changes made to the outbox table.
 
-orders table migration
+### The Orders Table
 
-```
+Next, the orders table:
+
+```sql
+-- services/order/internal/adapters/db/migrations/20261118100000_create_orders_table.sql
+
 -- +goose Up
 CREATE TABLE orders (
   id           UUID PRIMARY KEY,
@@ -119,18 +200,42 @@ CREATE TABLE orders (
 DROP TABLE IF EXISTS orders;
 ```
 
-i dont want to deviate and make this article longer than it needs to be, but basically we will write queries and use sqlc to generate go functions, we do this since were not using an orm
+### The Queries
 
-so we do for these
+I don't want to make this guide longer than it needs to be, so I will keep this part short. We're using sqlc, which generates typed Go functions from our SQL queries.
 
-- outbox.sql: InsertOutboxEvent, DeleteOutboxEvent
-- order.sql: CreateOrder, GetOrder
+```sql
+-- services/order/internal/adapters/db/sqlc/queries/outbox.sql
 
-sqlc turns these into typed Go functions. WithTx is what lets every query run in
+-- name: InsertOutboxEvent :exec
+INSERT INTO outbox (id, aggregatetype, aggregateid, type, payload)
+VALUES ($1, $2, $3, $4, $5);
 
-we create our order domain entity
-
+-- name: DeleteOutboxEvent :exec
+DELETE FROM outbox WHERE id = $1;
 ```
+
+```sql
+-- services/order/internal/adapters/db/sqlc/queries/order.sql
+
+-- name: CreateOrder :one
+INSERT INTO orders (id, customer_id, amount, status)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: GetOrder :one
+SELECT * FROM orders WHERE id = $1;
+```
+
+Running `sqlc generate` turns these into Go functions. sqlc also generates a `WithTx` method, which lets us run queries in transactions.
+
+### The Order Domain
+
+Next, we create our order domain entity:
+
+```go
+// services/order/internal/domain/order/order.go
+
 package order
 
 import (
@@ -190,12 +295,21 @@ type CreatedPayload struct {
 	Status     Status    `json:"status"`
 	CreatedAt  time.Time `json:"created_at"`
 }
-
 ```
 
-and the order reposiroty in port aswell
+`AggregateType` and `EventOrderCreated` are the values we write to the `aggregatetype` and `type` columns of the outbox. We keep them in the domain so the rest of the code doesn't hardcode them.
 
-```
+`New` validates the input and returns a new order with a `PENDING` status.
+
+`CreatedPayload` is the event the other services receive. It's separate from the `Order` struct, so we can change the order without breaking the event the other services depend on.
+
+### The Order Repository Port
+
+Next, we define the repository interface in our ports:
+
+```go
+// services/order/internal/ports/order.go
+
 package ports
 
 import (
@@ -211,9 +325,15 @@ type OrderRepository interface {
 }
 ```
 
-we will now implelment the order repository in with our adapter
+This follows the hexagonal architecture. The service layer uses the interface defined in this port, and our adapter layer implements it. So the service is not tied to any specific implementation, and we can swap the implementation for anything else that satisfies the interface.
 
-```
+### The Order Repository
+
+This is the most important part of this guide. Next, we implement the order repository interface in our database adapter:
+
+```go
+// services/order/internal/adapters/db/repository/order.go
+
 package repository
 
 import (
@@ -311,20 +431,537 @@ func (r *OrderRepository) GetByID(ctx context.Context, id uuid.UUID) (*order.Ord
 }
 ```
 
-either the order and the event both exist or neither does, and there's no call to a broker anywhere. The insert-then-delete keeps the table empty forever, but the insert is already in the WAL, and the WAL is what Debezium reads.
+`Create` does everything inside one transaction:
 
-Service, handler, main
+- It starts a transaction and uses `WithTx` to run all the queries inside it. The deferred `Rollback` does nothing once the transaction commits, but it undoes everything if we return early with an error.
+- It inserts the order.
+- It builds the event payload and inserts it into the outbox table. The aggregate type is `order`, the aggregate ID is the order's ID, and the type is `OrderCreated`.
+- It deletes the outbox row immediately after.
+- It commits.
 
-- services/order.go validates the order and calls the repository. It knows nothing about Kafka.
-- handlers/order.go exposes POST /api/v1/orders and GET /api/v1/orders/:id.
-- repository.go wraps all the repositories, so main.go creates them once.
-- cmd/main.go loads the env, opens the database through the pgx driver, wires the layers together, and handles graceful shutdown.
+Either the order and the event both exist, or neither of them does. And notice that there is no call to a broker anywhere in this code.
 
-next we have to setup our containers
+You might be wondering why we delete the outbox row right after we insert it. Debezium does not read the table. It reads the WAL. The insert is already in the WAL by the time we commit, so Debezium still sees it and publishes the event. Deleting the row keeps the outbox table empty forever, so it never grows and we never have to clean it up.
 
-order service dockerfile
+`GetByID` maps the sqlc row back into our domain order and turns `sql.ErrNoRows` into our own `ErrNotFound`.
 
+### The Order Service
+
+Next, the order service:
+
+```go
+// services/order/internal/services/order.go
+
+package services
+
+import (
+	"context"
+
+	"github.com/google/uuid"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/domain/order"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/ports"
+)
+
+type OrderService struct {
+	repo ports.OrderRepository
+}
+
+func NewOrderService(repo ports.OrderRepository) *OrderService {
+	return &OrderService{repo: repo}
+}
+
+func (s *OrderService) CreateOrder(ctx context.Context, customerID uuid.UUID, amount int64) (*order.Order, error) {
+	o, err := order.New(customerID, amount)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.repo.Create(ctx, o); err != nil {
+		return nil, err
+	}
+	return o, nil
+}
+
+func (s *OrderService) GetOrder(ctx context.Context, id uuid.UUID) (*order.Order, error) {
+	return s.repo.GetByID(ctx, id)
+}
 ```
+
+Notice how simple this is. The service validates the order and hands it to the repository. It knows nothing about Kafka or events. Publishing is now just a side effect of saving.
+
+### Wrapping the Repositories and Services
+
+Our service only has one repository and one service for now. But as it grows, we don't want `main.go` to create every repository and every service one by one. So we wrap them:
+
+```go
+// services/order/internal/adapters/db/repository/repository.go
+
+package repository
+
+import "database/sql"
+
+type Repositories struct {
+	Order *OrderRepository
+}
+
+func New(db *sql.DB) *Repositories {
+	return &Repositories{
+		Order: NewOrderRepository(db),
+	}
+}
+```
+
+```go
+// services/order/internal/services/services.go
+
+package services
+
+import "github.com/umohsamuel/transactional-outbox/services/order/internal/ports"
+
+type Services struct {
+	Order *OrderService
+}
+
+func New(orderRepo ports.OrderRepository) *Services {
+	return &Services{
+		Order: NewOrderService(orderRepo),
+	}
+}
+```
+
+As the service grows, adding a repository is just a new field and one line in `repository.New`. `services.New` also takes the `ports.OrderRepository` interface and not the `Repositories` struct, so the service layer stays independent of the adapter.
+
+### The HTTP Handler
+
+Next, the handler that exposes our orders over HTTP:
+
+```go
+// services/order/internal/adapters/transport/http/handlers/order.go
+
+package handlers
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/domain/order"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/services"
+)
+
+type OrderHandler struct {
+	svc *services.OrderService
+}
+
+func NewOrderHandler(s *services.Services) *OrderHandler {
+	return &OrderHandler{svc: s.Order}
+}
+
+func (h *OrderHandler) RegisterRoutes(r gin.IRouter) {
+	g := r.Group("/orders")
+	g.POST("", h.Create)
+	g.GET("/:id", h.Get)
+}
+
+type createOrderRequest struct {
+	CustomerID uuid.UUID `json:"customer_id" binding:"required"`
+	Amount     int64     `json:"amount" binding:"required,gt=0"`
+}
+
+func (h *OrderHandler) Create(c *gin.Context) {
+	var req createOrderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	o, err := h.svc.CreateOrder(c, req.CustomerID, req.Amount)
+	switch {
+	case errors.Is(err, order.ErrInvalidAmount), errors.Is(err, order.ErrInvalidCustID):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	case err != nil:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create order"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, o)
+}
+
+func (h *OrderHandler) Get(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid order id"})
+		return
+	}
+
+	o, err := h.svc.GetOrder(c, id)
+	switch {
+	case errors.Is(err, order.ErrNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	case err != nil:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not get order"})
+		return
+	}
+
+	c.JSON(http.StatusOK, o)
+}
+```
+
+The handler adds `POST /orders` and `GET /orders/:id`. The `binding` tags let Gin validate the request body, so a missing customer ID or an amount of `0` gets a `400` before it reaches the service. Validation errors from our domain also get a `400`, anything else gets a `500` with a generic message, and an order that doesn't exist gets a `404`.
+
+### The HTTP Server
+
+Next, the server that holds the router and registers our handlers:
+
+```go
+// services/order/internal/adapters/transport/http/http.go
+
+package http
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/adapters/transport/http/handlers"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/services"
+)
+
+type HttpServer struct {
+	router   *gin.Engine
+	services *services.Services
+}
+
+func NewHttpServer(svc *services.Services) *HttpServer {
+	r := gin.Default()
+	r.ContextWithFallback = true
+	s := &HttpServer{router: r, services: svc}
+
+	s.setupRoutes()
+	return s
+}
+
+func (s *HttpServer) setupRoutes() {
+	v1 := s.router.Group("/api/v1")
+
+	handlers.NewOrderHandler(s.services).RegisterRoutes(v1)
+}
+
+func (s *HttpServer) Handler() http.Handler {
+	return s.router
+}
+```
+
+All our routes are under `/api/v1`, so the full path to create an order is `/api/v1/orders`. We also set `ContextWithFallback` to `true`, so the Gin context uses the request's context. That way, if the client disconnects, the database transaction in our repository gets cancelled too.
+
+### The Environment Variables
+
+Next, the config. We read it from environment variables into a struct:
+
+```go
+// services/order/pkg/env/env.go
+
+package env
+
+import (
+	"fmt"
+
+	"github.com/caarlos0/env/v11"
+	_ "github.com/joho/godotenv/autoload"
+)
+
+type Env struct {
+	Port          int    `env:"PORT" envDefault:"8080"`
+	CLIENT_ORIGIN string `env:"CLIENT_ORIGIN"`
+	AppEnv        string `env:"APP_ENV" envDefault:"development"`
+
+	DB PostgresEnv
+}
+
+type PostgresEnv struct {
+	DB_USER     string `env:"DB_USER"`
+	DB_PASSWORD string `env:"DB_PASSWORD"`
+	DB_DATABASE string `env:"DB_DATABASE"`
+	DB_HOST     string `env:"DB_HOST"`
+	DB_SCHEMA   string `env:"DB_SCHEMA"`
+	DB_PORT     int    `env:"DB_PORT" envDefault:"5432"`
+	DB_SSLMODE  string `env:"DB_SSLMODE"`
+}
+
+func LoadEnv() (*Env, error) {
+	var cfg Env
+
+	if err := env.Parse(&cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse env config: %w", err)
+	}
+
+	return &cfg, nil
+}
+```
+
+### Wiring Everything Together
+
+Finally, we wire everything together in main:
+
+```go
+// services/order/cmd/main.go
+
+package main
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"net/url"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/adapters/db/repository"
+	httpserver "github.com/umohsamuel/transactional-outbox/services/order/internal/adapters/transport/http"
+	"github.com/umohsamuel/transactional-outbox/services/order/internal/services"
+	"github.com/umohsamuel/transactional-outbox/services/order/pkg/env"
+)
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	cfg, err := env.LoadEnv()
+	if err != nil {
+		return err
+	}
+
+	db, err := openDB(ctx, cfg.DB)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	repos := repository.New(db)
+	svcs := services.New(repos.Order)
+	server := httpserver.NewHttpServer(svcs)
+
+	srv := &http.Server{
+		Addr:              ":" + strconv.Itoa(cfg.Port),
+		Handler:           server.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("listening on %s", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+	}
+
+	log.Println("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
+}
+
+func openDB(ctx context.Context, e env.PostgresEnv) (*sql.DB, error) {
+	q := url.Values{}
+	if e.DB_SSLMODE != "" {
+		q.Set("sslmode", e.DB_SSLMODE)
+	}
+	if e.DB_SCHEMA != "" {
+		q.Set("search_path", e.DB_SCHEMA)
+	}
+
+	dsn := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(e.DB_USER, e.DB_PASSWORD),
+		Host:     fmt.Sprintf("%s:%d", e.DB_HOST, e.DB_PORT),
+		Path:     e.DB_DATABASE,
+		RawQuery: q.Encode(),
+	}
+
+	db, err := sql.Open("pgx", dsn.String())
+	if err != nil {
+		return nil, fmt.Errorf("open db: %w", err)
+	}
+
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("ping db: %w", err)
+	}
+
+	return db, nil
+}
+```
+
+In `main.go`, we load the env, open the database with the pgx driver, pass the repositories to the services, and pass the services to the HTTP server. We also [gracefully shut down](https://www.umohsg.com/blog/graceful-shutdown-in-golang-2fbbf043-1b2e-45ab-bfc9-b7eafd89926c) the server when we get a `Ctrl+C` or a `SIGTERM`.
+
+### The Notification Service
+
+Now the other side. The notification service is a single `main.go` file that consumes the order events from Kafka:
+
+```go
+// services/notification/main.go
+
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/segmentio/kafka-go"
+)
+
+type orderCreated struct {
+	OrderID    string    `json:"order_id"`
+	CustomerID string    `json:"customer_id"`
+	Amount     int64     `json:"amount"`
+	Status     string    `json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+func main() {
+	brokers := getenv("KAFKA_BROKERS", "localhost:9092")
+	topic := getenv("KAFKA_TOPIC", "outbox.event.order")
+	groupID := getenv("KAFKA_GROUP_ID", "notification-service")
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	brokerList := strings.Split(brokers, ",")
+
+	log.Printf("waiting for topic %q", topic)
+	if err := waitForTopic(ctx, brokerList[0], topic); err != nil {
+		log.Println("shutting down")
+		return
+	}
+
+	r := kafka.NewReader(kafka.ReaderConfig{
+		Brokers: brokerList,
+		Topic:   topic,
+		GroupID: groupID,
+	})
+	defer r.Close()
+
+	log.Printf("notification service listening on topic %q", topic)
+
+	for {
+		m, err := r.ReadMessage(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				log.Println("shutting down")
+				return
+			}
+			log.Printf("read message: %v", err)
+			time.Sleep(time.Second)
+			continue
+		}
+
+		log.Printf("received: topic=%s partition=%d offset=%d key=%s headers=%s",
+			m.Topic, m.Partition, m.Offset, m.Key, headers(m.Headers))
+
+		evt, err := decode(m.Value)
+		if err != nil {
+			log.Printf("could not decode payload %s: %v", m.Value, err)
+			continue
+		}
+
+		log.Printf("sending confirmation to customer %s: order %s for %d is %s",
+			evt.CustomerID, evt.OrderID, evt.Amount, evt.Status)
+	}
+}
+
+func waitForTopic(ctx context.Context, broker, topic string) error {
+	for {
+		conn, err := kafka.DialContext(ctx, "tcp", broker)
+		if err == nil {
+			partitions, err := conn.ReadPartitions(topic)
+			conn.Close()
+			if err == nil && len(partitions) > 0 {
+				return nil
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func decode(raw []byte) (orderCreated, error) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		raw = []byte(s)
+	}
+
+	var evt orderCreated
+	err := json.Unmarshal(raw, &evt)
+	return evt, err
+}
+
+func headers(hs []kafka.Header) string {
+	parts := make([]string, 0, len(hs))
+	for _, h := range hs {
+		parts = append(parts, h.Key+"="+string(h.Value))
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
+func getenv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+```
+
+Debezium names the topic `outbox.event.` plus the aggregate type, so our topic is `outbox.event.order`.
+
+The consumer reads each message and logs the key, the headers and the payload. In a real system, this is where you would send the email.
+
+`decode` handles the payload whether it comes in as a JSON object or as a JSON string, since that depends on how the connector is set up.
+
+Before creating the reader, we call `waitForTopic` so the consumer only joins the group once the topic exists. Otherwise, kafka-go gives it no partitions and it never receives anything.
+
+## Setting Up the Containers
+
+Next, we have to set up our containers.
+
+### The Order Service Dockerfile
+
+```dockerfile
+# services/order/Dockerfile
+
 FROM golang:1.27-alpine AS build
 
 WORKDIR /src
@@ -343,9 +980,13 @@ USER nobody
 CMD ["./main"]
 ```
 
-order service docker compose
+This is a multi-stage build. We compile the binary in the Go image, then copy only the binary into a small Alpine image and run it as a non-root user.
 
-```
+### The Order Service Docker Compose
+
+```yaml
+# services/order/docker-compose.yaml
+
 services:
   app:
     profiles: ["app"]
@@ -400,10 +1041,37 @@ networks:
     external: true
 ```
 
-next the notification service that should recieve the event we publish in our setup
-the dockerfile
+We set `wal_level=logical` so Postgres writes enough detail to the WAL for Debezium to decode each change.
 
+Postgres also joins two networks: `order_network` for the order app, and the shared `outbox_infra` network so Kafka Connect can reach it. The order app only needs `order_network`, since it never talks to Kafka.
+
+The order service also needs a `.env` file:
+
+```bash
+# services/order/.env
+
+PORT=8080
+
+DB_USER=postgres
+DB_PASSWORD=postgres
+DB_DATABASE=order_db
+DB_HOST=localhost
+DB_PORT=5432
+DB_SCHEMA=public
+DB_SSLMODE=disable
+
+GOOSE_DRIVER=postgres
+GOOSE_DBSTRING="host=localhost port=5432 user=postgres password=postgres dbname=order_db sslmode=disable"
+GOOSE_MIGRATION_DIR=./internal/adapters/db/migrations
 ```
+
+Make sure the `dbname` in `GOOSE_DBSTRING` matches `DB_DATABASE`, so goose runs the migrations against the right database.
+
+### The Notification Service Dockerfile
+
+```dockerfile
+# services/notification/Dockerfile
+
 FROM golang:1.27-alpine AS build
 
 WORKDIR /src
@@ -422,9 +1090,13 @@ USER nobody
 CMD ["./main"]
 ```
 
-the docker compose
+This is the same as the order service. The only difference is that we build from `.` instead of `./cmd`, since the whole service is one `main.go` file.
 
-```
+### The Notification Service Docker Compose
+
+```yaml
+# services/notification/docker-compose.yaml
+
 services:
   app:
     build:
@@ -446,17 +1118,29 @@ networks:
     external: true
 ```
 
-next we have to setup debezium our cdc tool and also create our infrastrcuture layout
+The notification service only joins the shared network, because the only thing it talks to is Kafka.
 
-first lets create our shared network
+## Setting Up the Infrastructure
 
-```
+Next, we set up Kafka, Kafka Connect with Debezium, and Kafka UI.
+
+### The Shared Network
+
+Each service has its own compose file, so each one can be started and stopped on its own. But they still need to reach each other. So first, let's create a shared network that every compose file joins:
+
+```bash
 docker network create outbox_infra
 ```
 
-infra docker compose
+Every compose file declares this network as `external`. That means none of them own it, and none of them will delete it when they shut down.
 
-```
+### The Infrastructure Docker Compose
+
+Next, the compose file at the root of the project:
+
+```yaml
+# docker-compose.yaml
+
 name: outbox-infra
 
 services:
@@ -534,31 +1218,85 @@ networks:
     external: true
 ```
 
-- Kafka: one broker in KRaft mode.
-- Kafka Connect (quay.io/debezium/connect:3.2.0.Final): Connect with the Debezium connectors built in. It stores its own state in three Kafka topics. The env config provider lets the connector read the database password from an environment variable instead of a file.
-- Kafka UI (kafbat/kafka-ui) on port 8081: browse topics, read messages, see connectors.
+Kafka runs as a single broker in KRaft mode. Other containers connect to it on `kafka:9092`, and your PC connects to it on `localhost:9094`. You can find the rest of these settings in my [Kafka pipelines guide](https://www.umohsg.com/blog/building-fault-tolerant-event-driven-kafka-pipelines-in-go-reliable-reprocessing-dead-letter-queues-1f6874d4-270c-48e1-9798-324b494c7f0e).
 
-Debezium is an open source distributed platform for change data capture.
+The `connect` service uses the Debezium image, which is Kafka Connect with the Debezium connectors already installed. The `CONNECT_CONFIG_PROVIDERS` settings let our connector read the database password from an environment variable instead of the JSON file.
 
-omo, it means i have to provide all the file context, and this guide will be long. omooo
+Kafka UI runs on port `8081`.
 
-start everything up
-make infra
-make order
+Kafka Connect reads the Debezium password from a `.env` file at the root of the project:
 
-next, wed create Debezium database user and permissions
+```bash
+# .env
 
-CREATE ROLE debezium WITH LOGIN REPLICATION ..., then grant CONNECT on the database, USAGE on the schema, and SELECT on outbox only. Explain each one:
-
-- REPLICATION lets it create the replication slot and stream the WAL.
-- SELECT is for the initial snapshot.
-- No access to orders: the role can't read business data.
-
-explain more and give the commands to paste in the terminal
-
-next debezium connector config and registration
-
+DEBEZIUM_USER_PASSWORD=debezium
 ```
+
+### Starting Everything
+
+Now we can start the infrastructure:
+
+```bash
+docker compose up -d
+```
+
+Docker marks the `connect` container as started before Kafka Connect is actually ready. Run this to wait until its API responds:
+
+```bash
+until curl -s http://localhost:8083/ > /dev/null; do sleep 2; done
+```
+
+Once it returns, confirm that Kafka Connect has the Postgres connector:
+
+```bash
+curl http://localhost:8083/connector-plugins
+```
+
+You should see `io.debezium.connector.postgresql.PostgresConnector` in the list.
+
+Next, start the order service and run the migrations:
+
+```bash
+docker compose -f services/order/docker-compose.yaml --profile app up -d --build
+cd services/order
+goose up
+cd ../..
+```
+
+This creates the `orders` and `outbox` tables and the `order_outbox` publication. We run goose from `services/order` because that's where its `.env` file is.
+
+If you don't feel like typing all of this, the repository also has a Makefile with these steps: `make network`, `make infra`, `make order` and `make notification`.
+
+### The Debezium Database User
+
+Debezium needs its own database user. We could give it our main user, but that user can read and change everything, and Debezium only needs to read the outbox.
+
+Connect to Postgres inside the order database container:
+
+```bash
+docker exec -it order_pg psql -U postgres -d order_db
+```
+
+Then create the user. Use the same password you put in the root `.env` file:
+
+```sql
+CREATE ROLE debezium WITH LOGIN REPLICATION PASSWORD 'debezium';
+GRANT CONNECT ON DATABASE order_db TO debezium;
+GRANT USAGE ON SCHEMA public TO debezium;
+GRANT SELECT ON public.outbox TO debezium;
+```
+
+`LOGIN` lets the user connect, and `REPLICATION` lets it create a replication slot and stream the WAL. `CONNECT` and `USAGE` give it access to the `order_db` database and the `public` schema. `SELECT` on the outbox is for the snapshot Debezium takes the first time the connector starts.
+
+The Debezium user can only read the outbox. It has no access to the `orders` table.
+
+You only need to do this once per database volume. If you delete the volume, you have to do it again.
+
+### The Debezium Connector
+
+Next, we tell Debezium what to watch and where to send it. Create `debezium/order-outbox-connector.json` at the root of the project:
+
+```json
 {
   "name": "order-outbox-connector",
   "config": {
@@ -585,39 +1323,180 @@ next debezium connector config and registration
 }
 ```
 
-- pgoutput: Postgres's built-in decoder, so no extension to install.
-- publication.name: order_outbox with autocreate.mode: disabled: use the publication from the migration instead of creating one.
-- slot.name: Postgres keeps WAL until Debezium confirms it has read it, so nothing is lost while Connect is down.
-- table.include.list: public.outbox and tombstones.on.delete: false: watch only the outbox, and send no empty messages for the deletes.
-- The EventRouter transform: aggregatetype picks the topic (outbox.event.order), aggregateid becomes the message key (so one order's events stay in order), payload becomes the message value, and type becomes the eventType header. This ties back to the column table already in your article.
-- StringConverter: the payload arrives as clean JSON, without Debezium's schema wrapper.
+Let's go through the important ones:
 
-give commands on howto setup and send the inital post request
+- database.hostname: Kafka Connect reaches Postgres by its container name, `order_pg`, over the shared network.
+- database.password: This reads the password from the environment variable we set on the Kafka Connect container.
+- plugin.name: `pgoutput` is the logical decoding plugin built into Postgres, so we don't have to install anything.
+- publication.name and publication.autocreate.mode: They tell Debezium to use the `order_outbox` publication from our migration, instead of creating its own.
+- slot.name: This is the name of the replication slot. Postgres keeps the WAL for this slot until Debezium confirms it has read it. So if Kafka Connect goes down, no events are lost, and Debezium picks up where it stopped.
+- table.include.list: It tells Debezium to only watch `public.outbox`.
+- tombstones.on.delete: Our repository deletes every outbox row right after it inserts it. Setting this to `false` stops Debezium from sending an empty message to Kafka for every delete. The outbox event router also ignores the delete events themselves.
+- The converters: `StringConverter` sends the key and the payload as plain text, without Debezium's schema wrapper.
 
-lastly, Start the consumer
-make notification, then docker logs -f notification_app.
+The last setting is the outbox transform. By default, Debezium sends every row change with extra data, like the old row, the new row and some metadata. `EventRouter` removes that and sends only the event.
 
-testing 16. Happy path
-POST /api/v1/orders:
+It uses the outbox columns to build the event. The topic name comes from `aggregatetype`, so our `order` events go to `outbox.event.order`. The message key comes from `aggregateid`, and the message value comes from `payload`. The `table.fields.additional.placement` setting also adds the `type` column to each message as a header called `eventType`.
 
-- Notification logs: the received: line with key = order ID and eventType=OrderCreated, then the "sending confirmation" line.
-- Kafka UI: topic outbox.event.order with the message, its key and its header.
-- Database: orders has 1 row and outbox has 0. The event was published even though the table is empty, which is the key moment for the article.
+Now register the connector with Kafka Connect:
 
-17. Failure demo (recommended)
-1. docker stop connect.
-1. Place 2–3 orders. They succeed, because the order service doesn't depend on Kafka at all.
-1. Show that nothing reaches the notification service.
-1. docker start connect. Every missed event arrives, in order, because the replication slot kept the WAL.
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  --data @debezium/order-outbox-connector.json \
+  http://localhost:8083/connectors
+```
 
-notes:
+Then check its status:
 
-At-least-once delivery: consumers must be idempotent. Use the id header (the outbox event ID) to skip duplicates. That leads nicely into the saga and consumer side if you write a follow-up.
+```bash
+curl http://localhost:8083/connectors/order-outbox-connector/status
+```
 
-Cleanup: removing the connector doesn't drop the replication slot. Drop it with pg_drop_replication_slot, or Postgres keeps WAL forever.
+Both the connector and its task should say `RUNNING`:
 
-conclusion
+```json
+{
+  "name": "order-outbox-connector",
+  "connector": {
+    "state": "RUNNING",
+    "worker_id": "172.26.0.3:8083"
+  },
+  "tasks": [
+    {
+      "id": 0,
+      "state": "RUNNING",
+      "worker_id": "172.26.0.3:8083"
+    }
+  ],
+  "type": "source"
+}
+```
 
-references
-https://www.ibm.com/think/topics/change-data-capture
-https://debezium.io/documentation/reference/stable/kc-tutorial.html
+You can also see the connector in Kafka UI under Kafka Connect.
+
+### Starting the Notification Service
+
+Lastly, start the notification service and follow its logs:
+
+```bash
+docker compose -f services/notification/docker-compose.yaml up -d --build
+docker logs -f notification_app
+```
+
+You should see:
+
+```bash
+waiting for topic "outbox.event.order"
+notification service listening on topic "outbox.event.order"
+```
+
+## Testing
+
+Now, how do we test this?
+
+### The Happy Path
+
+In another terminal, place an order:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/orders \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id": "3f1c2a4e-8b7d-4c6e-9a1f-2b3c4d5e6f70", "amount": 5000}'
+```
+
+The order service saves the order and returns it:
+
+```json
+{
+  "ID": "e2027503-b264-40c5-8e9f-e1b0d425b76f",
+  "CustomerID": "3f1c2a4e-8b7d-4c6e-9a1f-2b3c4d5e6f70",
+  "Amount": 5000,
+  "Status": "PENDING",
+  "CreatedAt": "2026-11-18T13:59:54.581932Z"
+}
+```
+
+A moment later, the notification service logs the event:
+
+```bash
+received: topic=outbox.event.order partition=0 offset=0 key=e2027503-b264-40c5-8e9f-e1b0d425b76f headers=[__debezium.context.connectorLogicalName=order __debezium.context.taskId=0 __debezium.context.connectorName=postgresql id=02580ef7-2fa4-4df1-9703-9abfb22dd8c9 eventType=OrderCreated]
+sending confirmation to customer 3f1c2a4e-8b7d-4c6e-9a1f-2b3c4d5e6f70: order e2027503-b264-40c5-8e9f-e1b0d425b76f for 5000 is PENDING
+```
+
+The message key is the order ID, and the `eventType` header is `OrderCreated`. The `id` header is the outbox row's ID, and you can ignore the `__debezium` headers.
+
+You can also see the message in Kafka UI at `http://localhost:8081`, under Topics > `outbox.event.order` > Messages.
+
+Now, check the database:
+
+```bash
+docker exec order_pg psql -U postgres -d order_db -c "SELECT count(*) FROM orders;" -c "SELECT count(*) FROM outbox;"
+```
+
+The `orders` table has `1` row, and the `outbox` table has `0`. The event was published even though the outbox is empty. That's because Debezium read the insert from the WAL, not from the table.
+
+### When Kafka Connect Is Down
+
+First, stop Kafka Connect:
+
+```bash
+docker stop connect
+```
+
+Then place a few orders. They still succeed, since the order service doesn't depend on Kafka or Kafka Connect, but nothing reaches the notification service yet.
+
+Now start Kafka Connect again:
+
+```bash
+docker start connect
+```
+
+After a few seconds, the missed events show up in the notification logs, in the order you placed them. The replication slot kept the WAL while Kafka Connect was down, so Debezium continues from where it stopped.
+
+The same works for the notification service. Stop it, place a few orders, and start it again. The events wait in Kafka until it comes back.
+
+## Notes
+
+Before taking this to production, there are a few things to prepare for:
+
+### At-Least-Once Delivery
+
+The outbox pattern guarantees at-least-once delivery, not exactly-once. If Kafka Connect crashes after publishing an event but before saving its position, it publishes that event again when it restarts.
+
+So your consumers must be idempotent. An easy way to do this is to store the `id` header of every event you process and skip any event you have already seen.
+
+### Replication Slots
+
+Deleting a connector does not delete its replication slot. Postgres keeps every WAL file the slot hasn't read, so an unused slot keeps growing the WAL until your disk is full.
+
+So when you delete a connector, also drop its replication slot:
+
+```sql
+SELECT pg_drop_replication_slot('order_outbox_slot');
+```
+
+## Conclusion
+
+In this guide, we built the transactional outbox pattern in Go with Debezium and Kafka. The key takeaways are:
+
+- Writing to a database and publishing to a broker are two separate writes, and a crash or rollback can leave them out of sync.
+- The outbox pattern saves the event in the same transaction as the business data, so both are saved or neither is.
+- Debezium reads the outbox rows from the Postgres WAL and publishes them to Kafka, so the service never talks to Kafka.
+- Deleting the outbox row in the same transaction keeps the table empty, and the event still reaches Kafka through the WAL.
+- The replication slot holds the WAL until Debezium reads it, so no events are lost if Kafka Connect goes down.
+
+The outbox pattern solves the dual write problem, but it comes with trade-offs:
+
+- More infrastructure: You have to run and monitor Kafka Connect and Debezium on top of Kafka.
+- At-least-once delivery: Events can arrive more than once, so consumers must be idempotent.
+- Replication slots: An unused slot will fill your disk with WAL files.
+
+(If you want to see the full codebase, check out the [repository](https://github.com/umohsamuel/transactional-outbox). Play around with it and lmk what you think.)
+
+## References
+
+- [IBM: What is Change Data Capture?](https://www.ibm.com/think/topics/change-data-capture)
+- [Microservices.io: Pattern: Transactional Outbox](https://microservices.io/patterns/data/transactional-outbox.html)
+- [Debezium: Outbox Event Router](https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html)
+- [Debezium: PostgreSQL Connector](https://debezium.io/documentation/reference/stable/connectors/postgresql.html)
+- [Debezium: Tutorial](https://debezium.io/documentation/reference/stable/kc-tutorial.html)
